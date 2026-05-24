@@ -4,3 +4,4 @@ data/output_videos/
 data/input_videos/
 data/metric/
 data/panel_alignment/
+src/__pycache__/

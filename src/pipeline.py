@@ -1,7 +1,7 @@
 import os, cv2
 from util import parse_metadata_from_srt, load_frame, create_video_from_frames, create_side_by_side_video
 from tempSynchronization import sync_frames, sync_frames_with_motion_vectors
-from preprocess import resize_frame, resize_frame_FOV, resize_ir_to_exact_rgb, resize_ir_to_match_rgb_height, resize_and_pad_to_match, correct_lens_distortion_polynomial
+from preprocess import resize_frame, resize_frame_FOV, resize_ir_to_exact_rgb, resize_ir_to_match_rgb_height, resize_and_pad_to_match, resize_frame_simple, correct_lens_distortion_polynomial
 from spatialAlignment import compute_homography, align_frames_spatially, refine_homography_ecc
 from validation import validate_frame_pair, overall_validation, visualize_validation_metrics
 from compressionAwareAlignment import extract_motion_vectors, refine_homography_with_motion_vectors
@@ -64,14 +64,10 @@ def processing_pipeline(data_folder, name_video1, name_video2, panel_dimensions)
         k1=-0.2
         focus=600
         ir_undistorted  = correct_lens_distortion_polynomial(ir_frame, k1, focus)
-        # Resize IR to match RGB height (simpler approach)
-        height1, width1 = rgb_frame.shape[:2]
-        ir_h, ir_w = ir_undistorted.shape[:2]
-        if ir_h != height1:
-            scale = height1 / ir_h
-            ir_resized = cv2.resize(ir_undistorted, (int(ir_w * scale), height1))
-        else:
-            ir_resized = ir_undistorted
+
+        # resize IR frame
+        ir_resized = resize_frame_FOV(ir_undistorted, ir_frame_metadata, rgb_frame, rgb_frame_metadata)
+        # ir_resized = resize_frame_simple(ir_undistorted, rgb_frame)
 
         # 4. Initial spatial alignment (using metadata)
         H = compute_homography(rgb_frame_metadata, ir_frame_metadata)

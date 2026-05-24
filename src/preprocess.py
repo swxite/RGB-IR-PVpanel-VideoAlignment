@@ -64,7 +64,17 @@ def resize_frame_FOV(frame, frame_metadata, goal_frame, goal_metadata):
     # return resized_frame
     return frame
 
-
+def resize_frame_simple(ir_frame, rgb_frame):
+     # Resize IR to match RGB height (simpler approach)
+    height1, width1 = rgb_frame.shape[:2]
+    ir_h, ir_w = ir_frame.shape[:2]
+    if ir_h != height1:
+        scale = height1 / ir_h
+        ir_resized = cv2.resize(ir_frame, (int(ir_w * scale), height1))
+    else:
+        ir_resized = ir_frame
+    
+    return ir_resized
 
 def resize_frame(frame, frame_metadata, goal_metadata):
     """
