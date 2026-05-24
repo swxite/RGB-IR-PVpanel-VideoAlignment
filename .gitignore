@@ -1,4 +1,6 @@
 data/frames/
 data/mv/
 data/output_videos/
-data/
+data/input_videos/
+data/metric/
+data/panel_alignment/

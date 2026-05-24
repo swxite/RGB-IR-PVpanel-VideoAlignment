@@ -1,4 +1,4 @@
-import cv2, time
+import cv2, time, os
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -111,7 +111,8 @@ def calc_SSIM(frame1, frame2):
     score, _ = ssim(frame1_gray, frame2_gray, full=True)
     return score
 
-def visulize_panel_alignment(frame1, panel_corners1, frame2, panel_corners2, homography=None):
+# =================================================================================================================================
+def visulize_panel_alignment(frame1, panel_corners1, frame2, panel_corners2, video_name, frame_idx, save_dir=None, homography=None):
     """
     Visualize the alignment of the nadir panel between RGB and IR frames.
 
@@ -210,14 +211,24 @@ def visulize_panel_alignment(frame1, panel_corners1, frame2, panel_corners2, hom
     if homography is not None:
         cv2.putText(combined, "Magenta: Homography Grid", (10, h - 60),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-    cv2.imshow("Panel Alignment", combined)
-    cv2.waitKey(1)  # Required to update the window
-    time.sleep(15)   # Keep window open for 3 seconds
-    cv2.destroyAllWindows()
+    
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        output_path = os.path.join(save_dir, f"{video_name}_panelAlignment_frame{frame_idx}.png")
+
+        if cv2.imwrite(output_path, combined):
+            print(f"✅ Alignment Image saved to: {output_path}")
+        else:
+            print("❌ Error: Could not save the alignemt image.")
+    else:    
+        cv2.imshow(f"Panel Alignment frame #{frame_idx}", combined)
+        cv2.waitKey(1)  # Required to update the window
+        time.sleep(15)   # Keep window open for 3 seconds
+        cv2.destroyAllWindows()
 
     return combined
 
-def validate_frame_pair(frame1, meta1, frame2, meta2, panel_dimensions, H, visualize=False, ir_resized=None):
+def validate_frame_pair(frame1, meta1, frame2, meta2, panel_dimensions, H, video_name, frame_idx, save_dir, visualize=False, ir_resized=None):
     # detect panels in both frames
     # rgb_panel = detect_nadir_panel(frame1, panel_dimensions, meta1['focal_len'], meta1['rel_alt'])
     rgb_panel = detect_panel_with_fallbacks(frame1, meta1, panel_dimensions, True)
@@ -264,13 +275,14 @@ def validate_frame_pair(frame1, meta1, frame2, meta2, panel_dimensions, H, visua
                 scale_x = ir_resized.shape[1] / frame2.shape[1]
                 vis_ir_panel = ir_panel * np.array([scale_x, scale_y])
         
-        visulize_panel_alignment(frame1, rgb_panel, vis_frame2, vis_ir_panel)
+        # output_dir = os.path.join(save_dir, "panel_alignment")
+        visulize_panel_alignment(frame1, rgb_panel, vis_frame2, vis_ir_panel, video_name, frame_idx, save_dir)
 
     return reproj_error, iou, ssim_score
 
 
 # =================================================================================================================
-def visualize_validation_metrics(results_reproj_error, results_iou, results_ssim, save_dir=None):
+def visualize_validation_metrics(results_reproj_error, results_iou, results_ssim, video_name, save_dir=None):
     """
     Visualize the three validation metrics and their averages in a single graph.
 
@@ -315,7 +327,8 @@ def visualize_validation_metrics(results_reproj_error, results_iou, results_ssim
     plt.grid(True)
 
     if save_dir:
-        plt.savefig(f"{save_dir}/reprojection_error.png", dpi=300, bbox_inches='tight')
+        os.makedirs(save_dir, exist_ok=True)
+        plt.savefig(f"{save_dir}/{video_name}_reprojection_error.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show(block=False)
@@ -331,7 +344,7 @@ def visualize_validation_metrics(results_reproj_error, results_iou, results_ssim
     plt.grid(True)
 
     if save_dir:
-        plt.savefig(f"{save_dir}/iou.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{save_dir}/{video_name}_iou.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show(block=False)
@@ -347,7 +360,7 @@ def visualize_validation_metrics(results_reproj_error, results_iou, results_ssim
     plt.grid(True)
 
     if save_dir:
-        plt.savefig(f"{save_dir}/ssim.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{save_dir}/{video_name}_ssim.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show(block=False)
@@ -389,7 +402,7 @@ def visualize_validation_metrics(results_reproj_error, results_iou, results_ssim
                 ha="center", fontsize=12, bbox={"facecolor":color, "alpha":0.5, "pad":5})
 
     if save_dir:
-        plt.savefig(f"{save_dir}/summary_table.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{save_dir}/{video_name}_summary_table.png", dpi=300, bbox_inches='tight')
         plt.close()
     else:
         plt.show(block=False)
