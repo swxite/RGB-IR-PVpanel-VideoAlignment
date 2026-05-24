@@ -24,22 +24,53 @@ def gps_to_translation(rgb_lat, rgb_lon, ir_lat, ir_lon, altitude):
     return tx, ty
 
 
-def compute_homography(rgb_metadata, ir_metadata):
-    """Estimate homography using GPS, altitude, and gimbal angles."""
-    # Convert GPS to local coordinates (simplified)
-    lat_diff = ir_metadata['latitude'] - rgb_metadata['latitude']
+def compute_homography(rgb_img, ir_img, rgb_metadata, ir_metadata):
+    """
+    Compute an initial homography for already-resized IR images.
+
+    Assumptions:
+    - IR image has ALREADY been resized to approximately match RGB scale
+    - Cameras are roughly aligned
+    - We only need initial translation from metadata
+    """
+
+    h_rgb, w_rgb = rgb_img.shape[:2]
+    h_ir,  w_ir  = ir_img.shape[:2]
+
+    # ---------------------------------------------------
+    # 1. Center IR image inside RGB frame
+    # ---------------------------------------------------
+    tx_center = (w_rgb - w_ir) / 2
+    ty_center = (h_rgb - h_ir) / 2
+
+    # ---------------------------------------------------
+    # 2. Optional GPS correction
+    # ---------------------------------------------------
+    lat_diff = ir_metadata['latitude']  - rgb_metadata['latitude']
     lon_diff = ir_metadata['longitude'] - rgb_metadata['longitude']
-    alt_diff = ir_metadata['rel_alt'] - rgb_metadata['rel_alt']
 
-    # Scale factor based on focal length (IR: 40mm, RGB: 24mm)
-    scale_factor = ir_metadata['focal_len'] / rgb_metadata['focal_len']  # 40/24 = 1.67 [1][2]
+    # Convert rough GPS difference to pixel shift
+    # You will likely need to tune this factor
+    gps_scale = 1e5
 
-    # Homography matrix (simplified; use OpenCV's findHomography for real data)
+    tx_gps = lon_diff * gps_scale
+    ty_gps = lat_diff * gps_scale
+
+    # ---------------------------------------------------
+    # 3. Final translation
+    # ---------------------------------------------------
+    tx = tx_center + tx_gps
+    ty = ty_center + ty_gps
+
+    # ---------------------------------------------------
+    # 4. Homography matrix (translation only)
+    # ---------------------------------------------------
     H = np.array([
-        [scale_factor, 0, lon_diff * 1e5],  # Scale + translation
-        [0, scale_factor, lat_diff * 1e5],
+        [1, 0, tx],
+        [0, 1, ty],
         [0, 0, 1]
-    ])
+    ], dtype=np.float32)
+
     return H
 
 def detect_nadir_panel(frame, panel_dimensions, focal_len, rel_alt):
@@ -240,6 +271,77 @@ def search_around_projection(ir_frame, projected_corners, margin):
     return None
 
 
+def detect_panel_simple(frame, panel_dim=None, focal_len=None, rel_alt=None, is_ir=False):
+    """
+    Simple panel detection: find the largest quadrilateral in the image.
+    For IR frames, avoids edge-hugging quadrilaterals (like frame borders).
+
+    Args:
+        frame: Input frame (RGB or grayscale)
+        panel_dim: Optional (not used in this version)
+        focal_len: Optional (not used in this version)
+        rel_alt: Optional (not used in this version)
+        is_ir: Whether this is an IR frame (uses different filtering)
+
+    Returns:
+        Detected panel corners as numpy array (4x2) or None
+    """
+    h, w = frame.shape[:2]
+    
+    # Convert to grayscale if RGB
+    if len(frame.shape) == 3:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = frame
+    
+    # Apply adaptive thresholding
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                    cv2.THRESH_BINARY, 11, 2)
+    
+    # Find all contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter for quadrilaterals and find the largest that's not touching the border
+    best_contour = None
+    best_area = 0
+    for cnt in contours:
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+        if len(approx) == 4:
+            area = cv2.contourArea(approx)
+            
+            # For IR frames, skip quadrilaterals that touch the image border
+            # (these are often the frame edges themselves)
+            if is_ir:
+                x, y, bbox_w, bbox_h = cv2.boundingRect(approx)
+                # Check if bounding box touches any border
+                touches_left = x == 0
+                touches_right = x + bbox_w >= w
+                touches_top = y == 0
+                touches_bottom = y + bbox_h >= h
+                if touches_left or touches_right or touches_top or touches_bottom:
+                    continue  # Skip edge-touching quadrilaterals for IR
+            
+            if area > best_area:
+                best_area = area
+                best_contour = approx
+    
+    if best_contour is None:
+        print("[DEBUG] No valid quadrilaterals found in simple detection")
+        return None
+    
+    # Order corners (top-left, top-right, bottom-right, bottom-left)
+    corners = best_contour.reshape(4, 2)
+    center = np.mean(corners, axis=0)
+    angles = np.arctan2(corners[:,1] - center[1], corners[:,0] - center[0])
+    sorted_indices = np.argsort(angles)
+    ordered_corners = corners[sorted_indices]
+    
+    print(f"[DEBUG] Found largest quadrilateral with area={best_area:.0f}")
+    return ordered_corners
+
+
 def detect_panel_by_color(frame, panel_dim, focal_len, rel_alt):
     """
     Detect panel based on color characteristics (for RGB frames).
@@ -355,20 +457,27 @@ def detect_panel_with_fallbacks(frame, frame_metadata, panel_dim, is_rgb=True):
     focal_len = frame_metadata['focal_len']
     rel_alt = frame_metadata['rel_alt']
     
-    # Strategy 1: Color-based detection (for RGB frames only - often works well for PV panels)
+    # Strategy 1: Simple detection - find largest quadrilateral (works for both RGB and IR)
+    # For IR frames, skip edge-touching quadrilaterals
+    panel = detect_panel_simple(frame, panel_dim, focal_len, rel_alt, is_ir=not is_rgb)
+    if panel is not None:
+        print("[DETECT] Panel detected using simple method")
+        return panel
+    
+    # Strategy 2: Color-based detection (for RGB frames only)
     if is_rgb:
         panel = detect_panel_by_color(frame, panel_dim, focal_len, rel_alt)
         if panel is not None:
             print("[DETECT] Panel detected using color-based method")
             return panel
     
-    # Strategy 2: Direct edge/contour detection (works for both RGB and IR)
+    # Strategy 3: Direct edge/contour detection (works for both RGB and IR)
     panel = detect_nadir_panel(frame, panel_dim, focal_len, rel_alt)
     if panel is not None:
         print("[DETECT] Panel detected using edge/contour method")
         return panel
 
-    # Strategy 3: Grid-based detection (for RGB frames with visible grid lines)
+    # Strategy 4: Grid-based detection (for RGB frames with visible grid lines)
     if is_rgb:
         panel = detect_panel_grid(frame, panel_dim)
         if panel is not None:

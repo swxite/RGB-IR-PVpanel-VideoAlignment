@@ -39,7 +39,7 @@ def correct_lens_distortion_polynomial(image, k1, focus=1.0):
 # ==========================================================================================
 
 
-def resize_frame_FOV(frame, frame_metadata, goal_frame, goal_metadata):
+def resize_frame_FOV(frame, frame_metadata, goal_frame, goal_metadata, correction=2.2):
     """ """
     # Extract focal lengths with error checking
     focal_len = frame_metadata.get('focal_len')
@@ -53,7 +53,7 @@ def resize_frame_FOV(frame, frame_metadata, goal_frame, goal_metadata):
 
     if focal_len == 0 or goal_focal_len == 0:
         raise ValueError("Focal length cannot be zero")
-    scale_factor = focal_len / goal_focal_len 
+    scale_factor = focal_len / goal_focal_len + correction
     frame = cv2.resize(frame, None, fx=scale_factor, fy=scale_factor)
 
     # Get the dimensions of the first frame

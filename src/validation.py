@@ -5,6 +5,7 @@ import pandas as pd
 from skimage.metrics import structural_similarity as ssim
 from spatialAlignment import detect_nadir_panel, find_panel_in_ir,  detect_panel_with_fallbacks
 from matplotlib.gridspec import GridSpec
+from panel_detection import detect_panel_array_bbox
 # The results will be evaluated using multiple metrics such as reprojection error and intersection over union (IoU) for quantitative assessment, 
 # supplemented by structural similarity measures and visual inspection for qualitative validation
 
@@ -80,6 +81,23 @@ def calc_IoU(frame1, frame2, panel1, panel2):
 
     return iou
 
+def calc_bbox_iou(boxA, boxB):
+
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+
+    xB = min(boxA[0]+boxA[2], boxB[0]+boxB[2])
+    yB = min(boxA[1]+boxA[3], boxB[1]+boxB[3])
+
+    inter = max(0, xB-xA) * max(0, yB-yA)
+
+    areaA = boxA[2] * boxA[3]
+    areaB = boxB[2] * boxB[3]
+
+    union = areaA + areaB - inter
+
+    return inter / (union + 1e-6)
+
 #  structural similarity
 def calc_SSIM(frame1, frame2):
     """
@@ -132,29 +150,30 @@ def visulize_panel_alignment(frame1, panel_corners1, frame2, panel_corners2, vid
     if panel_corners2 is None:
         print("[WARN] ir panel missing — skipping visualization")
         return
-    # Get frame dimensions for visualization
-    rgb_h, rgb_w = frame1.shape[:2]
-    ir_h, ir_w = frame2.shape[:2]
-    
     # Create copies to avoid modifying original frames
     frame1_vis = frame1.copy()
+    frame2_vis = frame2.copy()
     
-    # Prepare IR frame: resize to match RGB height, then pad vertically to center
-    # Scale factor: make IR height match RGB height
-    scale = rgb_h / ir_h
-    ir_resized = cv2.resize(frame2, (int(ir_w * scale), rgb_h))
-    
-    # Create a canvas with RGB height and IR resized width
-    # For vertical centering, we need both frames to have same height
-    # Since we resized IR to match RGB height, they now have the same height
-    frame2_vis = ir_resized
-    
-    # Scale IR panel corners to match resized frame
-    if panel_corners2 is not None:
-        panel_corners2 = panel_corners2 * scale
-    
-    # Get updated dimensions
+    # Get frame dimensions
     h, w = frame1_vis.shape[:2]
+    ir_h, ir_w = frame2_vis.shape[:2]
+    
+    # If IR frame is smaller, pad it vertically to center
+    if ir_h < h:
+        # Create a black canvas with RGB height and IR width
+        if len(frame2_vis.shape) == 2:
+            canvas = np.zeros((h, ir_w), dtype=frame2_vis.dtype)
+        else:
+            canvas = np.zeros((h, ir_w, frame2_vis.shape[2]), dtype=frame2_vis.dtype)
+        # Calculate vertical offset to center the IR frame
+        y_offset = (h - ir_h) // 2
+        # Place IR frame in the vertical center
+        canvas[y_offset:y_offset+ir_h, :] = frame2_vis
+        frame2_vis = canvas
+        # Adjust panel corners for the padding
+        if panel_corners2 is not None:
+            panel_corners2[:, 1] += y_offset
+    
     ir_w_scaled = frame2_vis.shape[1]
 
     # Convert IR to 3-channel if needed for consistent visualization
@@ -162,11 +181,14 @@ def visulize_panel_alignment(frame1, panel_corners1, frame2, panel_corners2, vid
         frame2_vis = cv2.cvtColor(frame2_vis, cv2.COLOR_GRAY2BGR)
 
     # Draw RGB panel (green)
-    cv2.drawContours(frame1_vis, [panel_corners1.reshape(-1, 1, 2).astype(np.int32)], -1, (255, 0, 255), 2)
+    if panel_corners1 is not None:
+        cv2.drawContours(frame1_vis, [panel_corners1.reshape(-1, 1, 2).astype(np.int32)], -1, (255, 0, 255), 6)
+        print(f"[DEBUG] RGB panel corners: min={panel_corners1.min():.1f}, max={panel_corners1.max():.1f}")
 
     # Draw IR panel (red)
     if panel_corners2 is not None:
-        cv2.drawContours(frame2_vis, [panel_corners2.reshape(-1, 1, 2).astype(np.int32)], -1, (255, 0, 0), 2)
+        cv2.drawContours(frame2_vis, [panel_corners2.reshape(-1, 1, 2).astype(np.int32)], -1, (255, 0, 0), 6)
+        print(f"[DEBUG] IR panel corners: min={panel_corners2.min():.1f}, max={panel_corners2.max():.1f}, frame2_vis shape={frame2_vis.shape}")
 
     # Add corner labels for clarity
     if panel_corners1 is not None and panel_corners2 is not None:
@@ -228,14 +250,126 @@ def visulize_panel_alignment(frame1, panel_corners1, frame2, panel_corners2, vid
 
     return combined
 
+def visualize_panel_alignment_bbox(frame1, bbox1, frame2, bbox2, video_name, frame_idx, save_dir=None):
+    """
+    Visualize the alignment of the nadir panel between RGB and IR frames using bounding boxes.
+
+    Args:
+        frame1: Input RGB frame (BGR format)
+        bbox1: Detected panel bbox in RGB frame (x, y, w, h)
+        frame2: Input IR frame (grayscale or BGR)
+        bbox2: Detected or projected panel bbox in IR frame (x, y, w, h)
+        video_name: Name of the video for saving
+        frame_idx: Frame index for saving
+        save_dir: Directory to save visualization (optional)
+        homography: Optional homography matrix to show alignment transformation
+
+    Returns:
+        Combined visualization of both frames with panel overlays
+    """
+    if bbox1 is None:
+        print("[WARN] RGB panel missing — skipping visualization")
+        return
+    if bbox2 is None:
+        print("[WARN] IR panel missing — skipping visualization")
+        return
+
+    # Create copies to avoid modifying original frames
+    frame1_vis = frame1.copy()
+    frame2_vis = frame2.copy()
+
+    # Get frame dimensions
+    h, w = frame1_vis.shape[:2]
+    ir_h, ir_w = frame2_vis.shape[:2]
+
+    # If IR frame is smaller, pad it vertically to center
+    if ir_h < h:
+        # Create a black canvas with RGB height and IR width
+        if len(frame2_vis.shape) == 2:
+            canvas = np.zeros((h, ir_w), dtype=frame2_vis.dtype)
+        else:
+            canvas = np.zeros((h, ir_w, frame2_vis.shape[2]), dtype=frame2_vis.dtype)
+        # Calculate vertical offset to center the IR frame
+        y_offset = (h - ir_h) // 2
+        # Place IR frame in the vertical center
+        canvas[y_offset:y_offset+ir_h, :] = frame2_vis
+        frame2_vis = canvas
+        # Adjust bbox coordinates for the padding
+        if bbox2 is not None:
+            x, y, w_bbox, h_bbox = bbox2
+            bbox2 = (x, y + y_offset, w_bbox, h_bbox)
+
+    ir_w_scaled = frame2_vis.shape[1]
+    
+    ir_w_scaled = frame2_vis.shape[1]
+    # Convert IR to 3-channel if needed for consistent visualization
+    if len(frame2_vis.shape) == 2:
+        frame2_vis = cv2.cvtColor(frame2_vis, cv2.COLOR_GRAY2BGR)
+
+    # Draw RGB panel bbox (magenta)
+    if bbox1 is not None:
+        x, y, w_bbox, h_bbox = bbox1
+        cv2.rectangle(frame1_vis, (x, y), (x + w_bbox, y + h_bbox), (255, 0, 255), 6)
+        print(f"[DEBUG] RGB panel bbox: x={x}, y={y}, w={w_bbox}, h={h_bbox}")
+
+    # Draw IR panel bbox (blue)
+    if bbox2 is not None:
+        x, y, w_bbox, h_bbox = bbox2
+        cv2.rectangle(frame2_vis, (x, y), (x + w_bbox, y + h_bbox), (255, 0, 0), 6)
+        print(f"[DEBUG] IR panel bbox: x={x}, y={y}, w={w_bbox}, h={h_bbox}, frame2_vis shape={frame2_vis.shape}")
+
+    # Add center point labels for clarity
+    if bbox1 is not None and bbox2 is not None:
+        # RGB center point
+        x1, y1, w1, h1 = bbox1
+        center1 = (x1 + w1//2, y1 + h1//2)
+        cv2.putText(frame1_vis, "C", center1, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+        # IR center point
+        x2, y2, w2, h2 = bbox2
+        center2 = (x2 + w2//2, y2 + h2//2)
+        cv2.putText(frame2_vis, "C", center2, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+    # Create side-by-side visualization
+    combined = np.hstack((frame1_vis, frame2_vis))
+
+    # Add labels and metadata info
+    cv2.putText(combined, "RGB Frame", (10, 30),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.putText(combined, "IR Frame", (w + 10, 30),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    # Add legend
+    cv2.putText(combined, "Magenta: RGB Panel", (10, h - 40),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+    cv2.putText(combined, "Blue: IR Panel", (10, h - 20),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        output_path = os.path.join(save_dir, f"{video_name}_panelAlignment_frame{frame_idx}.png")
+
+        if cv2.imwrite(output_path, combined):
+            print(f"✅ Alignment Image saved to: {output_path}")
+        else:
+            print("❌ Error: Could not save the alignment image.")
+    else:
+        cv2.imshow(f"Panel Alignment frame #{frame_idx}", combined)
+        cv2.waitKey(1)  # Required to update the window
+        time.sleep(1.5)  # Keep window open for 1.5 seconds
+        cv2.destroyAllWindows()
+
+    return combined
+
+
+
 def validate_frame_pair(frame1, meta1, frame2, meta2, panel_dimensions, H, video_name, frame_idx, save_dir, visualize=False, ir_resized=None):
     # detect panels in both frames
     # rgb_panel = detect_nadir_panel(frame1, panel_dimensions, meta1['focal_len'], meta1['rel_alt'])
     rgb_panel = detect_panel_with_fallbacks(frame1, meta1, panel_dimensions, True)
     ir_panel = detect_panel_with_fallbacks(frame2, meta2, panel_dimensions, False) 
-    # ir_panel = detect_nadir_panel(frame2, panel_dimensions, meta2['focal_len'], meta2['rel_alt'])  # Use same detector
-    # ir_corners_projected = cv2.perspectiveTransform(rgb_panel.reshape(-1, 1, 2), H)
-    # ir_panel = find_panel_in_ir(frame2, ir_corners_projected)
+    rgb_array_bbox = detect_panel_array_bbox(frame1, "rgb")
+    ir_array_bbox = detect_panel_array_bbox(frame1, "ir")
 
     if rgb_panel is None:
         print("[WARN] Skipping frame validation: missing RGB panel detection")
@@ -244,39 +378,16 @@ def validate_frame_pair(frame1, meta1, frame2, meta2, panel_dimensions, H, video
         print("[WARN] Skipping frame validation: missing IR panel detection")
         return np.nan, np.nan, np.nan
 
+    # reproj_error = calc_reprojection_error(rgb_panel, ir_panel, H)
+    # iou = calc_IoU(frame1, frame2, rgb_panel, ir_panel)
+    # ssim_score = calc_SSIM(frame1, frame2)
     reproj_error = calc_reprojection_error(rgb_panel, ir_panel, H)
-    iou = calc_IoU(frame1, frame2, rgb_panel, ir_panel)
+    iou = calc_bbox_iou(rgb_array_bbox, ir_array_bbox)
     ssim_score = calc_SSIM(frame1, frame2)
 
     if visualize:
-        # Use ir_resized for visualization if provided (shows original IR, not warped)
-        vis_frame2 = ir_resized if ir_resized is not None else frame2
-        
-        # If we're showing ir_resized but panels were detected on ir_aligned (frame2),
-        # we need to transform the panel corners back to ir_resized coordinates
-        vis_ir_panel = ir_panel
-        if ir_resized is not None and ir_resized.shape != frame2.shape:
-            # frame2 is the warped/aligned IR, ir_resized is the original resized IR
-            # We need to transform panel corners from warped space back to resized space
-            # This requires the inverse homography
-            if H is not None:
-                # Transform panel corners from warped (frame2) back to resized (ir_resized)
-                # ir_resized was the input to align_frames_spatially which used H
-                # So we need to apply inverse of H
-                H_inv = np.linalg.inv(H)
-                # Reshape panel corners for perspectiveTransform: (4, 1, 2)
-                ir_panel_reshaped = ir_panel.reshape(-1, 1, 2).astype(np.float32)
-                # Apply inverse transform
-                vis_ir_panel_reshaped = cv2.perspectiveTransform(ir_panel_reshaped, H_inv)
-                vis_ir_panel = vis_ir_panel_reshaped.reshape(-1, 2)
-            else:
-                # Without homography, just scale the corners
-                scale_y = ir_resized.shape[0] / frame2.shape[0]
-                scale_x = ir_resized.shape[1] / frame2.shape[1]
-                vis_ir_panel = ir_panel * np.array([scale_x, scale_y])
-        
-        # output_dir = os.path.join(save_dir, "panel_alignment")
-        visulize_panel_alignment(frame1, rgb_panel, vis_frame2, vis_ir_panel, video_name, frame_idx, save_dir)
+        # visulize_panel_alignment(frame1, rgb_panel, vis_frame2, vis_ir_panel, video_name, frame_idx, save_dir)
+        visualize_panel_alignment_bbox(frame1, rgb_array_bbox, frame2, ir_array_bbox, video_name, frame_idx, save_dir)
 
     return reproj_error, iou, ssim_score
 

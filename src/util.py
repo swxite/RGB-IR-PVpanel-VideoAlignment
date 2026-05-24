@@ -1,6 +1,6 @@
 import pysrt
 from datetime import datetime
-import cv2, os
+import cv2, os, time
 import numpy as np
 
 # Extract and synchronize metadata from .srt files for both RGB and IR.
@@ -83,6 +83,41 @@ def load_frame(video_path, frame_number=0):
 
     cap.release()
     return frame
+
+def visualize_aligned_frame(ir_aligned, video_name, frame_idx, title="Aligned IR Frame", save_dir=None):
+    """
+    Visualize a single aligned IR frame with optional color mapping.
+
+    Args:
+        ir_aligned: The aligned IR frame (can be grayscale or color)
+        title: Title for the visualization window
+
+    Returns:
+        None (displays the visualization)
+    """
+    # Convert to 3-channel if grayscale
+    if len(ir_aligned.shape) == 2:
+        # Apply a colormap for better visualization of thermal data
+        ir_vis = cv2.applyColorMap(ir_aligned, cv2.COLORMAP_JET)
+    else:
+        ir_vis = ir_aligned.copy()
+
+    # Add a title to the frame
+    cv2.putText(ir_vis, title, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        output_path = os.path.join(save_dir, f"{video_name}_panelAlignment_frame{frame_idx}.png")
+
+        if cv2.imwrite(output_path, ir_vis):
+            print(f"✅ Alignment Image saved to: {output_path}")
+        else:
+            print("❌ Error: Could not save the alignemt image.")
+    else:    
+        # Display the frame
+        cv2.imshow(title, ir_vis)
+        cv2.waitKey(1)  # Required to update the window
+        time.sleep(15)   # Keep window open for 3 seconds
+        cv2.destroyAllWindows()
 
 
 def create_video_from_frames(frames, output_path, fps, frame_size):

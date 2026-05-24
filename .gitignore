@@ -5,3 +5,4 @@ data/input_videos/
 data/metric/
 data/panel_alignment/
 src/__pycache__/
+src/playground.py
