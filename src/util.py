@@ -173,8 +173,8 @@ def create_side_by_side_video(rgb_frames, ir_frames, output_path, fps):
         side_by_side = np.hstack((rgb_frame, ir_frame))
 
         # Add text labels
-        cv2.putText(side_by_side, "RGB", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(side_by_side, "IR Aligned", (rgb_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        # cv2.putText(side_by_side, "RGB", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        # cv2.putText(side_by_side, "IR Aligned", (rgb_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
         out.write(side_by_side)
 
